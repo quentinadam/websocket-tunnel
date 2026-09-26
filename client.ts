@@ -1,5 +1,6 @@
 // Tunnel client: connects to the tunnel server, gets a public hostname, and replays the
-// HTTP requests it receives against http://$HOSTNAME:$PORT. Reconnects automatically and
+// HTTP requests and websocket connections it receives against http://$HOSTNAME:$PORT
+// (ws:// for websockets). Reconnects automatically and
 // asks for the same hostname again. See protocol.ts for the wire format.
 //
 // Usage: HOSTNAME=127.0.0.1 PORT=3000 deno run --allow-net --allow-env client.ts wss://example.com
@@ -8,17 +9,25 @@
 import {
   ABORT,
   ASSIGNED,
+  closeSocket,
   DATA,
   decode,
   decodeJson,
   encode,
   encodeJson,
+  encodeWsMessage,
   END,
   forwardableHeaders,
   REQUEST,
   type RequestHead,
   RESPONSE,
   type ResponseHead,
+  WS_ACCEPT,
+  WS_BINARY,
+  WS_CLOSE,
+  WS_OPEN,
+  WS_TEXT,
+  type WsClose,
 } from './protocol.ts';
 
 const serverUrl = Deno.args[0] ?? Deno.env.get('SERVER_URL');
@@ -85,6 +94,40 @@ async function handleRequest(ws: WebSocket, exchanges: Map<string, Exchange>, id
   }
 }
 
+// Opens the visitor's websocket against the local service and relays it over the tunnel.
+function openSocket(ws: WebSocket, sockets: Map<string, WebSocket>, id: string, head: RequestHead) {
+  let local: WebSocket;
+  try {
+    local = new WebSocket(`ws://${targetHost}:${targetPort}${head.path}`, {
+      protocols: head.protocols,
+      headers: head.headers,
+    });
+  } catch (err) {
+    console.error(`WS ${head.path} failed: ${err}`);
+    return send(ws, encode(ABORT, id));
+  }
+  local.binaryType = 'arraybuffer';
+  sockets.set(id, local);
+  let opened = false;
+  local.onopen = () => {
+    opened = true;
+    console.log(`WS ${head.path} -> open`);
+    send(ws, encode(WS_ACCEPT, id, encodeJson({ protocol: local.protocol })));
+  };
+  local.onmessage = (e) => send(ws, encodeWsMessage(id, e.data));
+  local.onclose = (e) => {
+    // Still registered: the local service closed first (or refused), so tell the server.
+    if (sockets.get(id) !== local) return;
+    sockets.delete(id);
+    if (opened) send(ws, encode(WS_CLOSE, id, encodeJson({ code: e.code, reason: e.reason })));
+    else {
+      console.error(`WS ${head.path} failed: ${target} refused the websocket or is unreachable`);
+      send(ws, encode(ABORT, id));
+    }
+  };
+  local.onerror = () => {/* onclose reports it */};
+}
+
 let retryDelay = 1000;
 
 function connect() {
@@ -93,6 +136,7 @@ function connect() {
   const ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
   const exchanges = new Map<string, Exchange>();
+  const sockets = new Map<string, WebSocket>();
 
   ws.onopen = () => {
     retryDelay = 1000;
@@ -101,10 +145,23 @@ function connect() {
   ws.onmessage = (e) => {
     if (!(e.data instanceof ArrayBuffer)) return;
     const { type, id, payload } = decode(e.data);
+    const socket = sockets.get(id);
+    if (socket) {
+      if (type === WS_TEXT && socket.readyState === WebSocket.OPEN) socket.send(new TextDecoder().decode(payload));
+      else if (type === WS_BINARY && socket.readyState === WebSocket.OPEN) socket.send(payload.slice());
+      else if (type === WS_CLOSE || type === ABORT) {
+        // Forget it first so its onclose doesn't echo a WS_CLOSE back.
+        sockets.delete(id);
+        closeSocket(socket, type === WS_CLOSE ? decodeJson<WsClose>(payload) : {});
+      }
+      return;
+    }
     if (type === ASSIGNED) {
       const host = new TextDecoder().decode(payload);
       name = host.split('.')[0];
       console.log(`tunnel open: https://${host} -> ${target}`);
+    } else if (type === WS_OPEN) {
+      openSocket(ws, sockets, id, decodeJson<RequestHead>(payload));
     } else if (type === REQUEST) {
       handleRequest(ws, exchanges, id, decodeJson<RequestHead>(payload));
     } else if (type === DATA) {
@@ -126,6 +183,8 @@ function connect() {
 
   ws.onclose = () => {
     for (const exchange of exchanges.values()) exchange.abort.abort();
+    for (const socket of sockets.values()) closeSocket(socket);
+    sockets.clear();
     console.log(`disconnected, reconnecting in ${retryDelay / 1000}s`);
     setTimeout(connect, retryDelay);
     retryDelay = Math.min(retryDelay * 2, 30_000);

@@ -7,11 +7,28 @@
 //   DATA     (3)  both directions   payload: body bytes (request body s->c, response body c->s)
 //   END      (4)  both directions   end of body
 //   ABORT    (5)  both directions   cancel the exchange (visitor went away, upstream failed, ...)
+//
+// Websocket exchanges reuse the same framing:
+//   WS_OPEN   (6)   server -> client  payload: JSON RequestHead (body is false, protocols requested)
+//   WS_ACCEPT (7)   client -> server  payload: JSON WsAccept, the local websocket is open
+//   WS_TEXT   (8)   both directions   payload: utf-8 text message
+//   WS_BINARY (9)   both directions   payload: binary message
+//   WS_CLOSE  (10)  both directions   payload: JSON WsClose
+// A WS_OPEN the client can't satisfy is answered with ABORT, and the visitor gets a 502.
 
 export const ASSIGNED = 0, REQUEST = 1, RESPONSE = 2, DATA = 3, END = 4, ABORT = 5;
+export const WS_OPEN = 6, WS_ACCEPT = 7, WS_TEXT = 8, WS_BINARY = 9, WS_CLOSE = 10;
 
-export type RequestHead = { method: string; path: string; headers: [string, string][]; body: boolean };
+export type RequestHead = {
+  method: string;
+  path: string;
+  headers: [string, string][];
+  body: boolean;
+  protocols?: string[];
+};
 export type ResponseHead = { status: number; statusText: string; headers: [string, string][] };
+export type WsAccept = { protocol: string };
+export type WsClose = { code?: number; reason?: string };
 
 const NIL_ID = '00000000-0000-0000-0000-000000000000';
 
@@ -48,4 +65,21 @@ const HOP_BY_HOP = new Set([
 
 export function forwardableHeaders(headers: Headers): [string, string][] {
   return [...headers].filter(([name]) => !HOP_BY_HOP.has(name));
+}
+
+// Handshake headers the websocket implementation on each side generates itself.
+export const forwardableWsHeaders = (headers: Headers) =>
+  forwardableHeaders(headers).filter(([name]) => !name.startsWith('sec-websocket-'));
+
+// WebSocket.close() only accepts 1000 or 3000-4999; other codes (1001, 1006, ...) become a plain close.
+export function closeSocket(ws: WebSocket, { code, reason }: WsClose = {}) {
+  if (ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED) return;
+  if (code === 1000 || (code !== undefined && code >= 3000 && code <= 4999)) ws.close(code, reason);
+  else ws.close();
+}
+
+// Sends a websocket message event's data as a WS_TEXT or WS_BINARY frame.
+export function encodeWsMessage(id: string, data: unknown): Uint8Array {
+  if (typeof data === 'string') return encode(WS_TEXT, id, new TextEncoder().encode(data));
+  return encode(WS_BINARY, id, new Uint8Array(data as ArrayBuffer));
 }

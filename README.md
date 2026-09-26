@@ -9,7 +9,8 @@ control.
   websocket, replayed against the local service, and the response is streamed back.
 
 The client reconnects automatically and asks for the same hostname again, so the URL stays stable across reconnects.
-Request and response bodies are streamed in both directions. Websocket upgrades are not tunnelled.
+Request and response bodies are streamed in both directions, and websocket connections are relayed too (text and binary
+messages, subprotocols, close codes).
 
 ## Requirements: a base domain on Cloudflare
 

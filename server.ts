@@ -1,7 +1,8 @@
 // Tunnel server: clients connect over websocket to https://BASE_DOMAIN and are given a
 // random <word>-<word>.BASE_DOMAIN hostname. HTTP requests arriving for that hostname
 // are forwarded over the websocket to the client, which replays them against its local
-// service and streams the response back. See protocol.ts for the wire format.
+// service and streams the response back. Websocket connections are relayed the same way.
+// See protocol.ts for the wire format.
 //
 // Usage:
 //   BASE_DOMAIN=example.com CERTIFICATE="$(cat origin.pem)" PRIVATE_KEY="$(cat origin-key.pem)" \
@@ -17,17 +18,27 @@
 import {
   ABORT,
   ASSIGNED,
+  closeSocket,
   DATA,
   decode,
   decodeJson,
   encode,
   encodeJson,
+  encodeWsMessage,
   END,
   forwardableHeaders,
+  forwardableWsHeaders,
   REQUEST,
   type RequestHead,
   RESPONSE,
   type ResponseHead,
+  WS_ACCEPT,
+  WS_BINARY,
+  WS_CLOSE,
+  WS_OPEN,
+  WS_TEXT,
+  type WsAccept,
+  type WsClose,
 } from './protocol.ts';
 import { WORDS } from './words.ts';
 
@@ -48,7 +59,16 @@ type Exchange = {
   responded: boolean;
   body?: ReadableStreamDefaultController<Uint8Array>;
 };
-type Tunnel = { name: string; ws: WebSocket; exchanges: Map<string, Exchange> };
+// A visitor websocket: waits for the client to open the local websocket (accept/reject), then
+// relays messages. Messages arriving before the visitor socket is open are queued.
+type Socket = {
+  accept: (protocol: string) => void;
+  reject: () => void;
+  ws?: WebSocket;
+  pending: (string | Uint8Array)[];
+  close?: WsClose;
+};
+type Tunnel = { name: string; ws: WebSocket; exchanges: Map<string, Exchange>; sockets: Map<string, Socket> };
 
 const tunnels = new Map<string, Tunnel>();
 const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
@@ -105,7 +125,7 @@ function handleControl(req: Request): Response {
   const name = wanted && VALID_NAME.test(wanted) && !tunnels.has(wanted) ? wanted : randomName();
   const { socket: ws, response } = Deno.upgradeWebSocket(req, { idleTimeout: 30 });
   ws.binaryType = 'arraybuffer';
-  const tunnel: Tunnel = { name, ws, exchanges: new Map() };
+  const tunnel: Tunnel = { name, ws, exchanges: new Map(), sockets: new Map() };
   tunnels.set(name, tunnel);
 
   ws.onopen = () => {
@@ -116,6 +136,8 @@ function handleControl(req: Request): Response {
   ws.onmessage = (e) => {
     if (!(e.data instanceof ArrayBuffer)) return;
     const { type, id, payload } = decode(e.data);
+    const socket = tunnel.sockets.get(id);
+    if (socket) return handleSocketMessage(tunnel, id, socket, type, payload);
     const exchange = tunnel.exchanges.get(id);
     if (!exchange) return;
     if (type === RESPONSE && !exchange.responded) {
@@ -152,9 +174,110 @@ function handleControl(req: Request): Response {
     console.log(`[${name}] client disconnected`);
     if (tunnels.get(name) === tunnel) tunnels.delete(name);
     for (const id of [...tunnel.exchanges.keys()]) fail(tunnel, id);
+    for (const socket of tunnel.sockets.values()) {
+      if (socket.ws) closeSocket(socket.ws);
+      else socket.reject();
+    }
+    tunnel.sockets.clear();
   };
 
   return response;
+}
+
+const pathOf = (req: Request) => {
+  const url = new URL(req.url);
+  return url.pathname + url.search;
+};
+
+function forwardedHeaders(req: Request, host: string, headers: [string, string][]): [string, string][] {
+  headers.push(['x-forwarded-host', host]);
+  if (!req.headers.has('x-forwarded-proto')) {
+    headers.push(['x-forwarded-proto', new URL(req.url).protocol.slice(0, -1)]);
+  }
+  return headers;
+}
+
+// The client opens the local websocket before the visitor's upgrade is accepted, so a refusal
+// can still be answered with a regular HTTP error.
+function forwardSocket(tunnel: Tunnel, req: Request, host: string): Promise<Response> {
+  const id = crypto.randomUUID();
+  const protocols = req.headers.get('sec-websocket-protocol')?.split(',').map((p) => p.trim()).filter(Boolean);
+  const head: RequestHead = {
+    method: 'GET',
+    path: pathOf(req),
+    headers: forwardedHeaders(req, host, forwardableWsHeaders(req.headers)),
+    body: false,
+    protocols,
+  };
+
+  return new Promise<Response>((respond) => {
+    const timeout = setTimeout(() => {
+      if (tunnel.sockets.get(id) !== socket || socket.ws) return;
+      tunnel.sockets.delete(id);
+      send(tunnel.ws, encode(ABORT, id));
+      respond(text('tunnel client did not open the websocket in time', 504));
+    }, 30_000);
+
+    const socket: Socket = {
+      pending: [],
+      reject: () => {
+        clearTimeout(timeout);
+        tunnel.sockets.delete(id);
+        respond(text('tunnel client could not open the websocket', 502));
+      },
+      accept: (protocol) => {
+        clearTimeout(timeout);
+        let upgraded;
+        try {
+          upgraded = Deno.upgradeWebSocket(req, { protocol: protocol || undefined });
+        } catch (err) {
+          // Malformed upgrade request (e.g. no sec-websocket-key): close the local side too.
+          tunnel.sockets.delete(id);
+          send(tunnel.ws, encode(ABORT, id));
+          return respond(text(`invalid websocket request: ${err}`, 400));
+        }
+        const { socket: ws, response } = upgraded;
+        ws.binaryType = 'arraybuffer';
+        socket.ws = ws;
+        ws.onopen = () => {
+          for (const data of socket.pending) ws.send(data);
+          socket.pending = [];
+          if (socket.close) closeSocket(ws, socket.close);
+        };
+        ws.onmessage = (e) => send(tunnel.ws, encodeWsMessage(id, e.data));
+        ws.onclose = (e) => {
+          // Still registered: the visitor closed first, so tell the client.
+          if (tunnel.sockets.get(id) !== socket) return;
+          tunnel.sockets.delete(id);
+          send(tunnel.ws, encode(WS_CLOSE, id, encodeJson({ code: e.code, reason: e.reason })));
+        };
+        respond(response);
+      },
+    };
+    tunnel.sockets.set(id, socket);
+    send(tunnel.ws, encode(WS_OPEN, id, encodeJson(head)));
+    console.log(`[${tunnel.name}] WS ${head.path}`);
+  });
+}
+
+function handleSocketMessage(tunnel: Tunnel, id: string, socket: Socket, type: number, payload: Uint8Array) {
+  const ws = socket.ws;
+  if (type === WS_ACCEPT && !ws) {
+    socket.accept(decodeJson<WsAccept>(payload).protocol);
+  } else if (type === ABORT && !ws) {
+    socket.reject();
+  } else if ((type === WS_TEXT || type === WS_BINARY) && ws) {
+    const data = type === WS_TEXT ? new TextDecoder().decode(payload) : payload.slice();
+    if (ws.readyState === WebSocket.OPEN) ws.send(data);
+    else if (ws.readyState === WebSocket.CONNECTING) socket.pending.push(data);
+  } else if (type === WS_CLOSE || type === ABORT) {
+    // The local side closed: forget the socket so its onclose doesn't echo a WS_CLOSE back.
+    tunnel.sockets.delete(id);
+    const close = type === WS_CLOSE ? decodeJson<WsClose>(payload) : {};
+    if (!ws) socket.reject();
+    else if (ws.readyState === WebSocket.CONNECTING) socket.close = close;
+    else closeSocket(ws, close);
+  }
 }
 
 function forward(
@@ -163,13 +286,16 @@ function forward(
   info: Deno.ServeHandlerInfo,
   host: string,
 ): Promise<Response> | Response {
-  if (req.headers.get('upgrade')) return text('websocket upgrades are not supported through the tunnel', 501);
+  const upgrade = req.headers.get('upgrade')?.toLowerCase();
+  if (upgrade === 'websocket') return forwardSocket(tunnel, req, host);
+  if (upgrade) return text(`${upgrade} upgrades are not supported through the tunnel`, 501);
   const id = crypto.randomUUID();
-  const url = new URL(req.url);
-  const headers = forwardableHeaders(req.headers);
-  headers.push(['x-forwarded-host', host]);
-  if (!req.headers.has('x-forwarded-proto')) headers.push(['x-forwarded-proto', url.protocol.slice(0, -1)]);
-  const head: RequestHead = { method: req.method, path: url.pathname + url.search, headers, body: req.body !== null };
+  const head: RequestHead = {
+    method: req.method,
+    path: pathOf(req),
+    headers: forwardedHeaders(req, host, forwardableHeaders(req.headers)),
+    body: req.body !== null,
+  };
 
   return new Promise<Response>((respond) => {
     tunnel.exchanges.set(id, { respond, responded: false });
