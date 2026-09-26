@@ -42,8 +42,12 @@ import {
 } from './protocol.ts';
 import { WORDS } from './words.ts';
 
-const BASE_DOMAIN = Deno.env.get('BASE_DOMAIN')?.toLowerCase();
-const pem = (name: string) => Deno.env.get(name)?.replaceAll('\\n', '\n');
+const BASE_DOMAIN = Deno.env.get('BASE_DOMAIN')?.toLowerCase() ?? '';
+
+function pem(name: string): string | undefined {
+  return Deno.env.get(name)?.replaceAll('\\n', '\n');
+}
+
 const CERTIFICATE = pem('CERTIFICATE');
 const PRIVATE_KEY = pem('PRIVATE_KEY');
 if (!BASE_DOMAIN) {
@@ -86,8 +90,9 @@ function randomName(): string {
   }
 }
 
-const text = (body: string, status = 200) =>
-  new Response(body + '\n', { status, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+function text(body: string, status = 200): Response {
+  return new Response(body + '\n', { status, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+}
 
 function send(ws: WebSocket, data: Uint8Array) {
   if (ws.readyState === WebSocket.OPEN) ws.send(data);
@@ -184,10 +189,10 @@ function handleControl(req: Request): Response {
   return response;
 }
 
-const pathOf = (req: Request) => {
+function pathOf(req: Request): string {
   const url = new URL(req.url);
   return url.pathname + url.search;
-};
+}
 
 function forwardedHeaders(req: Request, host: string, headers: [string, string][]): [string, string][] {
   headers.push(['x-forwarded-host', host]);
@@ -317,8 +322,9 @@ function forward(
   });
 }
 
-const tunnelFor = (host: string) =>
-  host.endsWith(`.${BASE_DOMAIN}`) ? tunnels.get(host.slice(0, -BASE_DOMAIN.length - 1)) : undefined;
+function tunnelFor(host: string): Tunnel | undefined {
+  return host.endsWith(`.${BASE_DOMAIN}`) ? tunnels.get(host.slice(0, -BASE_DOMAIN.length - 1)) : undefined;
+}
 
 // Permission endpoint for on-demand TLS in a reverse proxy (Caddy's `ask`): allows certificates
 // only for the base domain and the hostnames of connected tunnels.

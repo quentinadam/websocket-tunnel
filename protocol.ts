@@ -48,8 +48,13 @@ export function decode(data: ArrayBuffer): { type: number; id: string; payload: 
   return { type: bytes[0], id, payload: bytes.subarray(17) };
 }
 
-export const encodeJson = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
-export const decodeJson = <T>(payload: Uint8Array): T => JSON.parse(new TextDecoder().decode(payload));
+export function encodeJson(value: unknown): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(value));
+}
+
+export function decodeJson<T>(payload: Uint8Array): T {
+  return JSON.parse(new TextDecoder().decode(payload));
+}
 
 // Headers that describe a single hop and must not be forwarded.
 const HOP_BY_HOP = new Set([
