@@ -68,8 +68,9 @@ export function forwardableHeaders(headers: Headers): [string, string][] {
 }
 
 // Handshake headers the websocket implementation on each side generates itself.
-export const forwardableWsHeaders = (headers: Headers) =>
-  forwardableHeaders(headers).filter(([name]) => !name.startsWith('sec-websocket-'));
+export function forwardableWsHeaders(headers: Headers): [string, string][] {
+  return forwardableHeaders(headers).filter(([name]) => !name.startsWith('sec-websocket-'));
+}
 
 // WebSocket.close() only accepts 1000 or 3000-4999; other codes (1001, 1006, ...) become a plain close.
 export function closeSocket(ws: WebSocket, { code, reason }: WsClose = {}) {
