@@ -1,7 +1,7 @@
 FROM denoland/deno:2.9.7
 
 WORKDIR /app
-COPY protocol.ts words.ts server.ts ./
+COPY deno.json deno.lock protocol.ts words.ts server.ts ./
 RUN deno cache server.ts
 
 # Run unprivileged: listen on 8443 inside the container and map host port 443 (TLS) or 80

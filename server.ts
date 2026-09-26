@@ -40,9 +40,10 @@ import {
   type WsAccept,
   type WsClose,
 } from './protocol.ts';
+import { ensure } from '@quentinadam/ensure';
 import { WORDS } from './words.ts';
 
-const BASE_DOMAIN = Deno.env.get('BASE_DOMAIN')?.toLowerCase() ?? '';
+const BASE_DOMAIN = ensure(Deno.env.get('BASE_DOMAIN'), 'BASE_DOMAIN must be set').toLowerCase();
 
 function pem(name: string): string | undefined {
   return Deno.env.get(name)?.replaceAll('\\n', '\n');
@@ -50,10 +51,6 @@ function pem(name: string): string | undefined {
 
 const CERTIFICATE = pem('CERTIFICATE');
 const PRIVATE_KEY = pem('PRIVATE_KEY');
-if (!BASE_DOMAIN) {
-  console.error('BASE_DOMAIN must be set');
-  Deno.exit(1);
-}
 const TLS = CERTIFICATE && PRIVATE_KEY ? { cert: CERTIFICATE, key: PRIVATE_KEY } : undefined;
 if (!TLS) console.warn('CERTIFICATE or PRIVATE_KEY not set, serving plain HTTP');
 const PORT = Number(Deno.env.get('PORT') ?? (TLS ? 443 : 80));
@@ -312,7 +309,7 @@ function forward(
 
     if (req.body) {
       (async () => {
-        for await (const chunk of req.body!) {
+        for await (const chunk of ensure(req.body)) {
           if (!tunnel.exchanges.has(id)) return;
           send(tunnel.ws, encode(DATA, id, chunk));
         }
