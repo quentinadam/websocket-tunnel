@@ -11,6 +11,8 @@
 //        Literal "\n" sequences are accepted in place of newlines. If either is missing, the
 //        server speaks plain HTTP (e.g. behind a proxy that terminates TLS).
 //      PORT (default 443 with TLS, 80 without).
+// Requests to any other host at /check?domain=<hostname> answer 200 if a certificate may be issued
+// for <hostname> (the base domain or a connected tunnel), 403 otherwise: Caddy's on-demand TLS `ask`.
 
 import {
   ABORT,
@@ -189,13 +191,25 @@ function forward(
   });
 }
 
+const tunnelFor = (host: string) =>
+  host.endsWith(`.${BASE_DOMAIN}`) ? tunnels.get(host.slice(0, -BASE_DOMAIN.length - 1)) : undefined;
+
+// Permission endpoint for on-demand TLS in a reverse proxy (Caddy's `ask`): allows certificates
+// only for the base domain and the hostnames of connected tunnels.
+function handleCheck(url: URL): Response {
+  const domain = url.searchParams.get('domain')?.toLowerCase() ?? '';
+  return domain === BASE_DOMAIN || tunnelFor(domain) ? text('ok') : text(`${domain} not allowed`, 403);
+}
+
 Deno.serve({ port: PORT, ...TLS }, (req, info) => {
   // req.url carries the Host header (HTTP/1.1) or :authority (HTTP/2).
-  const host = new URL(req.url).hostname.toLowerCase();
+  const url = new URL(req.url);
+  const host = url.hostname.toLowerCase();
   if (host === BASE_DOMAIN) return handleControl(req);
   if (host.endsWith(`.${BASE_DOMAIN}`)) {
-    const tunnel = tunnels.get(host.slice(0, -BASE_DOMAIN.length - 1));
+    const tunnel = tunnelFor(host);
     return tunnel ? forward(tunnel, req, info, host) : text(`no tunnel at ${host}`, 404);
   }
+  if (url.pathname === '/check') return handleCheck(url);
   return text(`unknown host ${host}`, 404);
 });

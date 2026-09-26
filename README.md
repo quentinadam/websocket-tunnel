@@ -13,7 +13,8 @@ Request and response bodies are streamed in both directions. Websocket upgrades 
 
 ## Requirements: a base domain on Cloudflare
 
-You need a domain dedicated to the tunnel (the examples below use `example.com`). The server answers on the apex domain,
+You need a domain dedicated to the tunnel (the examples below use `example.com`). No domain? See
+[Without a domain: sslip.io and Caddy](#without-a-domain-sslipio-and-caddy). The server answers on the apex domain,
 which is where clients connect, and on every first-level subdomain, one per tunnel.
 
 In the Cloudflare dashboard for that domain:
@@ -76,6 +77,63 @@ The container runs unprivileged and listens on port 8443, so host port 443 (HTTP
 | `PORT`        | Listening port. Set to 8443 in the Docker image; otherwise defaults to 443 with a certificate and 80 without.               |
 
 Visiting `https://example.com` in a browser shows the number of active tunnels.
+
+## Without a domain: sslip.io and Caddy
+
+You can run the server without buying a domain by using [sslip.io](https://sslip.io), a free DNS service where
+`1-2-3-4.sslip.io` and every subdomain of it (e.g. `brave-otter.1-2-3-4.sslip.io`) resolve to the IP `1.2.3.4`. Use your
+server's IP, written with dashes, as the base domain: no DNS setup is needed.
+
+Since Cloudflare isn't involved, [Caddy](https://caddyserver.com) sits in front of the server and serves HTTPS with
+Let's Encrypt certificates. sslip.io doesn't support wildcard certificates, so Caddy uses
+[on-demand TLS](https://caddyserver.com/docs/automatic-https#on-demand-tls) to obtain a certificate for each hostname
+the first time it is visited. Caddy only does this after asking the server's `/check` endpoint, which allows the base
+domain and the hostnames of connected tunnels. This keeps random subdomains from triggering certificate requests.
+
+Caddy's `caddy reverse-proxy` command can serve a single fixed hostname without a config file, but on-demand TLS
+requires a short `Caddyfile`:
+
+```caddyfile
+{
+	on_demand_tls {
+		ask http://websocket-tunnel:8443/check
+	}
+}
+
+https:// {
+	tls {
+		on_demand
+	}
+	reverse_proxy websocket-tunnel:8443
+}
+```
+
+Then, with ports 80 and 443 open on the server (Let's Encrypt validates each hostname over port 80), and replacing
+`1-2-3-4` with your server's IP:
+
+```sh
+docker network create websocket-tunnel
+
+docker run -d --name websocket-tunnel --restart unless-stopped \
+  --network websocket-tunnel \
+  -e BASE_DOMAIN=1-2-3-4.sslip.io \
+  quentinadam/websocket-tunnel
+
+docker run -d --name caddy --restart unless-stopped \
+  --network websocket-tunnel \
+  -p 80:80 -p 443:443 \
+  -v "$PWD/Caddyfile:/etc/caddy/Caddyfile" \
+  -v caddy_data:/data \
+  caddy
+```
+
+The tunnel server speaks plain HTTP on the private Docker network and publishes no ports; Caddy terminates TLS. The
+`caddy_data` volume keeps the certificates across restarts. Clients then connect with `wss://1-2-3-4.sslip.io`.
+
+Let's Encrypt limits how many certificates can be issued for sslip.io, and that limit is shared by all its users.
+Setting `NAME` on the client keeps the same hostname, and therefore the same certificate, across runs instead of
+requesting a new one for each random name. If issuance is rate limited, [nip.io](https://nip.io) works the same way
+(`1-2-3-4.nip.io`).
 
 ## Running the client
 
