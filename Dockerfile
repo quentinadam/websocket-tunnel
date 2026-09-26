@@ -4,7 +4,8 @@ WORKDIR /app
 COPY protocol.ts words.ts server.ts ./
 RUN deno cache server.ts
 
-# Run unprivileged: listen on 8443 inside the container and map host port 443 to it.
+# Run unprivileged: listen on 8443 inside the container and map host port 443 (TLS) or 80
+# (plain HTTP, when no certificate is set) to it.
 USER deno
 ENV PORT=8443
 EXPOSE 8443

@@ -7,9 +7,10 @@
 //   BASE_DOMAIN=example.com CERTIFICATE="$(cat origin.pem)" PRIVATE_KEY="$(cat origin-key.pem)" \
 //     deno run --allow-net --allow-env server.ts
 // Env: BASE_DOMAIN (required): clients connect to wss://BASE_DOMAIN, tunnels get <name>.BASE_DOMAIN.
-//      CERTIFICATE / PRIVATE_KEY (required): PEM contents, e.g. a Cloudflare Origin CA certificate.
-//        Literal "\n" sequences are accepted in place of newlines.
-//      PORT (default 443).
+//      CERTIFICATE / PRIVATE_KEY (optional): PEM contents, e.g. a Cloudflare Origin CA certificate.
+//        Literal "\n" sequences are accepted in place of newlines. If either is missing, the
+//        server speaks plain HTTP (e.g. behind a proxy that terminates TLS).
+//      PORT (default 443 with TLS, 80 without).
 
 import {
   ABORT,
@@ -32,11 +33,13 @@ const BASE_DOMAIN = Deno.env.get('BASE_DOMAIN')?.toLowerCase();
 const pem = (name: string) => Deno.env.get(name)?.replaceAll('\\n', '\n');
 const CERTIFICATE = pem('CERTIFICATE');
 const PRIVATE_KEY = pem('PRIVATE_KEY');
-if (!BASE_DOMAIN || !CERTIFICATE || !PRIVATE_KEY) {
-  console.error('BASE_DOMAIN, CERTIFICATE and PRIVATE_KEY must be set');
+if (!BASE_DOMAIN) {
+  console.error('BASE_DOMAIN must be set');
   Deno.exit(1);
 }
-const PORT = Number(Deno.env.get('PORT') ?? 443);
+const TLS = CERTIFICATE && PRIVATE_KEY ? { cert: CERTIFICATE, key: PRIVATE_KEY } : undefined;
+if (!TLS) console.warn('CERTIFICATE or PRIVATE_KEY not set, serving plain HTTP');
+const PORT = Number(Deno.env.get('PORT') ?? (TLS ? 443 : 80));
 
 type Exchange = {
   respond: (response: Response) => void;
@@ -186,7 +189,7 @@ function forward(
   });
 }
 
-Deno.serve({ port: PORT, cert: CERTIFICATE, key: PRIVATE_KEY }, (req, info) => {
+Deno.serve({ port: PORT, ...TLS }, (req, info) => {
   // req.url carries the Host header (HTTP/1.1) or :authority (HTTP/2).
   const host = new URL(req.url).hostname.toLowerCase();
   if (host === BASE_DOMAIN) return handleControl(req);
