@@ -12,6 +12,7 @@
 //        Literal "\n" sequences are accepted in place of newlines. If either is missing, the
 //        server speaks plain HTTP (e.g. behind a proxy that terminates TLS).
 //      PORT (default 443 with TLS, 80 without).
+// GET https://BASE_DOMAIN/name returns a random, currently unused name, e.g. for the client's NAME.
 // Requests to any other host at /check?domain=<hostname> answer 200 if a certificate may be issued
 // for <hostname> (the base domain or a connected tunnel), 403 otherwise: Caddy's on-demand TLS `ask`.
 
@@ -121,6 +122,7 @@ function cancel(tunnel: Tunnel, id: string) {
 
 function handleControl(req: Request): Response {
   if (req.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
+    if (new URL(req.url).pathname === '/name') return text(randomName());
     return text(`tunnel server: ${tunnels.size} active tunnel(s)`);
   }
   const wanted = new URL(req.url).searchParams.get('name')?.toLowerCase();

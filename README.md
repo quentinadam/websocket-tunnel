@@ -77,7 +77,8 @@ The container runs unprivileged and listens on port 8000, so host port 443 (HTTP
 | `PRIVATE_KEY` | Optional. PEM private key matching the certificate. If either this or `CERTIFICATE` is missing, the server uses plain HTTP. |
 | `PORT`        | Listening port. Set to 8000 in the Docker image; otherwise defaults to 443 with a certificate and 80 without.               |
 
-Visiting `https://example.com` in a browser shows the number of active tunnels.
+Visiting `https://example.com` in a browser shows the number of active tunnels, and `https://example.com/name` returns a
+random, currently unused name (e.g. `brave-otter`) as plain text.
 
 ## Without a domain: sslip.io and Caddy
 
@@ -133,8 +134,8 @@ The tunnel server speaks plain HTTP on the private Docker network and publishes 
 
 Let's Encrypt limits how many certificates can be issued for sslip.io, and that limit is shared by all its users.
 Setting `NAME` on the client keeps the same hostname, and therefore the same certificate, across runs instead of
-requesting a new one for each random name. If issuance is rate limited, [nip.io](https://nip.io) works the same way
-(`1-2-3-4.nip.io`).
+requesting a new one for each random name; `NAME=$(curl -s https://1-2-3-4.sslip.io/name)` picks one once, to reuse
+afterwards. If issuance is rate limited, [nip.io](https://nip.io) works the same way (`1-2-3-4.nip.io`).
 
 ## Running the client
 
