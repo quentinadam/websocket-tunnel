@@ -52,7 +52,7 @@ points to, with an origin certificate:
 
 ```sh
 docker run -d --name websocket-tunnel --restart unless-stopped \
-  -p 443:8443 \
+  -p 443:8000 \
   -e BASE_DOMAIN=example.com \
   -e CERTIFICATE="$(cat origin.pem)" \
   -e PRIVATE_KEY="$(cat origin-key.pem)" \
@@ -63,19 +63,19 @@ Or without a certificate (plain HTTP, Cloudflare in **Flexible** mode):
 
 ```sh
 docker run -d --name websocket-tunnel --restart unless-stopped \
-  -p 80:8443 \
+  -p 80:8000 \
   -e BASE_DOMAIN=example.com \
   quentinadam/websocket-tunnel
 ```
 
-The container runs unprivileged and listens on port 8443, so host port 443 (HTTPS) or 80 (HTTP) is mapped to it.
+The container runs unprivileged and listens on port 8000, so host port 443 (HTTPS) or 80 (HTTP) is mapped to it.
 
 | Variable      | Description                                                                                                                 |
 | ------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `BASE_DOMAIN` | Required. Clients connect to `wss://BASE_DOMAIN`; tunnels are served at `<name>.BASE_DOMAIN`.                               |
 | `CERTIFICATE` | Optional. PEM certificate (e.g. the Cloudflare Origin CA certificate). Literal `\n` is accepted in place of newlines.       |
 | `PRIVATE_KEY` | Optional. PEM private key matching the certificate. If either this or `CERTIFICATE` is missing, the server uses plain HTTP. |
-| `PORT`        | Listening port. Set to 8443 in the Docker image; otherwise defaults to 443 with a certificate and 80 without.               |
+| `PORT`        | Listening port. Set to 8000 in the Docker image; otherwise defaults to 443 with a certificate and 80 without.               |
 
 Visiting `https://example.com` in a browser shows the number of active tunnels.
 
@@ -97,7 +97,7 @@ requires a short `Caddyfile`:
 ```caddyfile
 {
 	on_demand_tls {
-		ask http://websocket-tunnel:8443/check
+		ask http://websocket-tunnel:8000/check
 	}
 }
 
@@ -105,7 +105,7 @@ https:// {
 	tls {
 		on_demand
 	}
-	reverse_proxy websocket-tunnel:8443
+	reverse_proxy websocket-tunnel:8000
 }
 ```
 
