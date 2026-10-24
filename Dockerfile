@@ -1,4 +1,4 @@
-FROM denoland/deno:2.9.7
+FROM denoland/deno:2.9.8
 
 WORKDIR /app
 COPY deno.json deno.lock protocol.ts words.ts server.ts ./
